@@ -1,24 +1,24 @@
 package za.co.equalexperts.shoppingcart.service.impl;
 
+import org.springframework.http.HttpStatusCode;
 import org.springframework.stereotype.Service;
 import za.co.equalexperts.shoppingcart.dto.response.ProductDetailResponse;
 import za.co.equalexperts.shoppingcart.dto.response.ProductPriceDetailResponse;
 import za.co.equalexperts.shoppingcart.dto.request.ProductPriceRequest;
 import za.co.equalexperts.shoppingcart.dto.response.ProductPriceResponse;
 import za.co.equalexperts.shoppingcart.feign.PriceApiFeignClient;
-import za.co.equalexperts.shoppingcart.feign.dto.ProductPriceApiResponse;
 import za.co.equalexperts.shoppingcart.service.ProductService;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.util.HashMap;
-import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 
-import static java.math.BigDecimal.ROUND_HALF_UP;
 
 @Service
 public class ProductServiceImpl implements ProductService {
-
+    private final static BigDecimal TAX_RATE = new BigDecimal("0.125");
     private final PriceApiFeignClient priceApiFeignClient;
 
     public ProductServiceImpl(PriceApiFeignClient priceApiFeignClient) {
@@ -26,61 +26,63 @@ public class ProductServiceImpl implements ProductService {
     }
 
     @Override
-    public ProductPriceResponse getProductByName(String name) {
-        ProductPriceApiResponse productPriceApiResponse= priceApiFeignClient.getProductPrice(name).getBody();
-        ProductPriceResponse response = ProductPriceResponse.builder().price(productPriceApiResponse.getPrice()).title(productPriceApiResponse.getTitle()).status("Active").build();
-        return response;
+    public Optional<ProductPriceResponse> getProductByName(String name) {
+        var response= priceApiFeignClient.getProductPrice(name);
+        if (response.getStatusCode().is2xxSuccessful()) {
+            final var productPriceApiResponse = response.getBody();
+            return Optional.of(ProductPriceResponse.builder()
+                    .price(productPriceApiResponse.getPrice())
+                    .title(productPriceApiResponse.getTitle())
+                    .status("Active")
+                    .build());
+        } else if (response.getStatusCode().isSameCodeAs(HttpStatusCode.valueOf(404))) {
+            return Optional.empty();
+        }
+        throw new RuntimeException("Error getting product pricing - status code: " + response.getStatusCode().value());
     }
 
     @Override
-    public ProductDetailResponse getCartSummary(ProductPriceRequest request) {
-        Map<String, ProductPriceDetailResponse> products = new HashMap<>();
+    public Optional<ProductDetailResponse> getCartSummary(ProductPriceRequest request) {
+        final var  products = new HashMap<String, ProductPriceDetailResponse>();
         request.getProductPriceDetailRequests().forEach(productPriceDetailRequest -> {
-            ProductPriceApiResponse response = priceApiFeignClient.getProductPrice(productPriceDetailRequest.getName()).getBody();
+            var response = priceApiFeignClient.getProductPrice(productPriceDetailRequest.getName()).getBody();
             if (Objects.nonNull(response)) {
 
-                String name = response.getTitle();
-                BigDecimal price = response.getPrice();
-                int quantity = productPriceDetailRequest.getQuantity();
+                var name = response.getTitle();
+                var price = response.getPrice();
+                var quantity = productPriceDetailRequest.getQuantity();
 
                 if (products.containsKey(name)) {
                     ProductPriceDetailResponse existing = products.get(name);
                     existing.setQuantity(existing.getQuantity() + quantity);
                 } else {
-
-                    ProductPriceDetailResponse priceDetailResponse = ProductPriceDetailResponse.builder()
+                    var priceDetailResponse = ProductPriceDetailResponse.builder()
                             .unitPrice(price)
                             .quantity(quantity)
                             .name(name)
                             .build();
                     products.put(name, priceDetailResponse);
-
                 }
             }
-
         });
+
         if (!products.isEmpty()){
+            var subtotal = BigDecimal.valueOf(products.values().stream()
+                    .map(r -> r.getUnitPrice().multiply(new BigDecimal(r.getQuantity())))
+                    .mapToDouble(BigDecimal::doubleValue)
+                    .sum());
 
-            BigDecimal subtotal = BigDecimal.ZERO;
-            for (ProductPriceDetailResponse detail : products.values()) {
-                subtotal = subtotal.add(detail.getUnitPrice().multiply(BigDecimal.valueOf(detail.getQuantity())));
-            }
+            var tax = subtotal.multiply(TAX_RATE);
+            var total = subtotal.add(tax);
 
-            BigDecimal tax = subtotal.multiply(new BigDecimal("0.125"));
-            BigDecimal total = subtotal.add(tax);
-
-            subtotal = subtotal.setScale(2, ROUND_HALF_UP);
-            tax = tax.setScale(2, BigDecimal.ROUND_HALF_UP);
-            total = total.setScale(2, ROUND_HALF_UP);
-
-            return ProductDetailResponse.builder()
+            return Optional.of(ProductDetailResponse.builder()
                     .priceDetailResponses(products.values().stream().toList())
-                    .subtotal(subtotal).
-                    total(total).
-                    tax(tax).
-                    build();
-
+                    .subtotal(subtotal.setScale(2, RoundingMode.HALF_UP))
+                    .total(total.setScale(2, RoundingMode.HALF_UP))
+                    .tax(tax.setScale(2, RoundingMode.HALF_UP))
+                    .build()
+            );
         }
-        return null;
+        return Optional.empty();
     }
 }

@@ -4,9 +4,11 @@ import za.co.equalexperts.shoppingcart.dto.response.ProductDetailResponse;
 import za.co.equalexperts.shoppingcart.dto.response.ProductPriceResponse;
 import za.co.equalexperts.shoppingcart.dto.request.ProductPriceRequest;
 
+import java.util.Optional;
+
 public interface ProductService {
 
-    ProductPriceResponse getProductByName(String name);
+    Optional<ProductPriceResponse> getProductByName(String name);
 
-    ProductDetailResponse getCartSummary(ProductPriceRequest request);
+    Optional<ProductDetailResponse> getCartSummary(ProductPriceRequest request);
 }
